@@ -25,7 +25,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${manrope.variable} ${inter.variable} h-full antialiased dark`}>
       <head>
-        <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Montserrat:wght@100..900&family=Great+Vibes&family=Roboto:wght@100..900&display=swap" rel="stylesheet" />
+        <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400..900;1,400..900&family=Montserrat:wght@100..900&family=Great+Vibes&family=Roboto:wght@100..900&family=Cinzel:wght@400..900&family=Prata&family=Alex+Brush&family=Dancing+Script:wght@400..700&display=swap" rel="stylesheet" />
       </head>
       <body className="min-h-full flex flex-col font-inter">
         {children}

@@ -6,21 +6,13 @@ import { useEditor } from "../../store/EditorContext";
 
 /**
  * 🎨 Figma-style Infinite Canvas
- * Fix: Removed infinite loop by stabilizing dependencies.
+ * Pro Snapping (Edges + Centers)
  */
 export default function Canvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  
-  // Destructure functions from context
-  const { 
-    setCanvas, 
-    setSelectedObject, 
-    zoomIn, zoomOut, zoomToFit, 
-    undo, redo, deleteSelected 
-  } = useEditor();
+  const { setCanvas, setSelectedObject, zoomIn, zoomOut, zoomToFit, undo, redo, deleteSelected } = useEditor();
 
-  // Create refs for functions to avoid re-running the main initialization effect
   const undoRef = useRef(undo);
   const redoRef = useRef(redo);
   const deleteRef = useRef(deleteSelected);
@@ -31,15 +23,13 @@ export default function Canvas() {
     deleteRef.current = deleteSelected;
   }, [undo, redo, deleteSelected]);
 
-  // Guidelines state (ref is fine, doesn't trigger re-renders)
-  const snappingLines = useRef({ vertical: false, horizontal: false });
+  const vLines = useRef<number[]>([]);
+  const hLines = useRef<number[]>([]);
 
   useEffect(() => {
     if (!canvasRef.current || !containerRef.current) return;
-
     const container = containerRef.current;
 
-    // 1. Initialize Canvas Instance
     const instance = new fabric.Canvas(canvasRef.current, {
       width: container.clientWidth || 1000,
       height: container.clientHeight || 700,
@@ -51,7 +41,7 @@ export default function Canvas() {
 
     setCanvas(instance);
 
-    // 2. Initial Artboard
+    // Initial Elements
     const sheet = new fabric.Rect({
       left: 0, top: 0, width: 1000, height: 700,
       fill: "#ffffff", selectable: false, evented: false,
@@ -78,13 +68,81 @@ export default function Canvas() {
       instance.requestRenderAll();
     };
 
-    // 3. Events
+    // --- PRO SNAPPING ENGINE ---
+    const SNAP_THRESHOLD = 6;
+
     instance.on('object:moving', (opt) => {
-      const obj = opt.target;
-      if (!obj) return;
-      snappingLines.current = { vertical: false, horizontal: false };
-      if (Math.abs(obj.left) < 5) { obj.set({ left: 0 }); snappingLines.current.vertical = true; }
-      if (Math.abs(obj.top) < 5) { obj.set({ top: 0 }); snappingLines.current.horizontal = true; }
+      const activeObj = opt.target;
+      if (!activeObj) return;
+
+      vLines.current = [];
+      hLines.current = [];
+
+      // Points of interest for the active object (based on origin center)
+      const w = activeObj.getScaledWidth();
+      const h = activeObj.getScaledHeight();
+      const ax = activeObj.left!;
+      const ay = activeObj.top!;
+      
+      const activePointsX = [
+        { type: 'center', val: ax, offset: 0 },
+        { type: 'left', val: ax - w / 2, offset: w / 2 },
+        { type: 'right', val: ax + w / 2, offset: -w / 2 }
+      ];
+      const activePointsY = [
+        { type: 'center', val: ay, offset: 0 },
+        { type: 'top', val: ay - h / 2, offset: h / 2 },
+        { type: 'bottom', val: ay + h / 2, offset: -h / 2 }
+      ];
+
+      // Targets: Sheet (0,0) and other objects
+      const others = instance.getObjects().filter(o => o !== activeObj);
+
+      // Check Vertical Alignment (X)
+      activePointsX.forEach(ap => {
+        // Snap to Sheet
+        if (Math.abs(ap.val) < SNAP_THRESHOLD) {
+          activeObj.set({ left: ap.offset }); // Set relative to center
+          vLines.current.push(0);
+        }
+        // Snap to Others
+        others.forEach(other => {
+          if ((other as any).dataId === "artboard" && ap.type !== 'center') return; // Only snap center to artboard center
+          const ow = other.getScaledWidth();
+          const ox = other.left!;
+          const otherPointsX = [ox, ox - ow / 2, ox + ow / 2];
+          
+          otherPointsX.forEach(op => {
+            if (Math.abs(ap.val - op) < SNAP_THRESHOLD) {
+              activeObj.set({ left: op + ap.offset });
+              vLines.current.push(op);
+            }
+          });
+        });
+      });
+
+      // Check Horizontal Alignment (Y)
+      activePointsY.forEach(ap => {
+        // Snap to Sheet
+        if (Math.abs(ap.val) < SNAP_THRESHOLD) {
+          activeObj.set({ top: ap.offset });
+          hLines.current.push(0);
+        }
+        // Snap to Others
+        others.forEach(other => {
+          if ((other as any).dataId === "artboard" && ap.type !== 'center') return;
+          const oh = other.getScaledHeight();
+          const oy = other.top!;
+          const otherPointsY = [oy, oy - oh / 2, oy + oh / 2];
+          
+          otherPointsY.forEach(op => {
+            if (Math.abs(ap.val - op) < SNAP_THRESHOLD) {
+              activeObj.set({ top: op + ap.offset });
+              hLines.current.push(op);
+            }
+          });
+        });
+      });
     });
 
     instance.on('after:render', () => {
@@ -95,27 +153,34 @@ export default function Canvas() {
       ctx.strokeStyle = '#ff3e3e';
       ctx.lineWidth = 1 / instance.getZoom();
       ctx.setLineDash([5, 5]);
-      if (snappingLines.current.vertical) { ctx.beginPath(); ctx.moveTo(0, -2000); ctx.lineTo(0, 2000); ctx.stroke(); }
-      if (snappingLines.current.horizontal) { ctx.beginPath(); ctx.moveTo(-2000, 0); ctx.lineTo(1000, 0); ctx.stroke(); }
+
+      vLines.current.forEach(x => { ctx.beginPath(); ctx.moveTo(x, -2000); ctx.lineTo(x, 2000); ctx.stroke(); });
+      hLines.current.forEach(y => { ctx.beginPath(); ctx.moveTo(-2000, y); ctx.lineTo(2000, y); ctx.stroke(); });
+
       ctx.restore();
     });
 
+    instance.on('mouse:up', () => {
+      vLines.current = [];
+      hLines.current = [];
+      instance.requestRenderAll();
+    });
+
+    // Zoom/Pan/Handlers (Stable versions)
     instance.on("mouse:wheel", (opt) => {
       const e = opt.e as WheelEvent;
       if (e.ctrlKey || e.metaKey) {
-        let zoom = instance.getZoom();
-        zoom *= 0.991 ** e.deltaY;
-        zoom = Math.min(Math.max(zoom, 0.05), 20);
-        instance.zoomToPoint(new fabric.Point(e.offsetX, e.offsetY), zoom);
+        let z = instance.getZoom(); z *= 0.999 ** e.deltaY;
+        z = Math.min(Math.max(z, 0.05), 20);
+        instance.zoomToPoint(new fabric.Point(e.offsetX, e.offsetY), z);
       } else {
-        const vpt = [...(instance.viewportTransform || [1,0,0,1,0,0])];
-        vpt[4] -= e.deltaX; vpt[5] -= e.deltaY;
-        instance.setViewportTransform(vpt as any);
+        const v = [...(instance.viewportTransform || [1,0,0,1,0,0])];
+        v[4] -= e.deltaX; v[5] -= e.deltaY;
+        instance.setViewportTransform(v as any);
       }
       e.preventDefault(); e.stopPropagation();
     });
 
-    // Pan
     let isDrag = false, lx = 0, ly = 0;
     instance.on("mouse:down", (opt) => {
       const e = opt.e as any;
@@ -128,31 +193,33 @@ export default function Canvas() {
     instance.on("mouse:move", (opt) => {
       if (isDrag) {
         const e = opt.e as any;
-        const vpt = [...(instance.viewportTransform || [1,0,0,1,0,0])];
-        vpt[4] += e.clientX - lx; vpt[5] += e.clientY - ly;
-        instance.setViewportTransform(vpt as any);
+        const v = [...(instance.viewportTransform || [1,0,0,1,0,0])];
+        v[4] += e.clientX - lx; v[5] += e.clientY - ly;
+        instance.setViewportTransform(v as any);
         lx = e.clientX; ly = e.clientY;
         instance.requestRenderAll();
       }
     });
-    instance.on("mouse:up", () => {
-      isDrag = false; instance.selection = true;
+
+    // Integrated mouse:up for panning reset
+    instance.on('mouse:up', () => {
+      isDrag = false;
+      instance.selection = true;
       container.style.cursor = "default";
-      snappingLines.current = { vertical: false, horizontal: false };
+      vLines.current = [];
+      hLines.current = [];
       instance.requestRenderAll();
     });
 
-    // Selection
-    const sel = (e: any) => {
+    const select = (e: any) => {
       const obj = e.selected?.[0];
       if (obj && obj.dataId === "artboard") { instance.discardActiveObject(); return; }
       setSelectedObject(obj || null);
     };
-    instance.on("selection:created", sel);
-    instance.on("selection:updated", sel);
+    instance.on("selection:created", select);
+    instance.on("selection:updated", select);
     instance.on("selection:cleared", () => setSelectedObject(null));
 
-    // Shortcuts using REFs to avoid re-rendering
     const handleKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); undoRef.current(); }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'Z'))) { e.preventDefault(); redoRef.current(); }
@@ -163,35 +230,25 @@ export default function Canvas() {
     };
     window.addEventListener('keydown', handleKey);
 
-    // Resize
     const observer = new ResizeObserver(() => {
       if (!instance.getElement()) return;
       instance.setDimensions({ width: container.clientWidth, height: container.clientHeight });
       fit();
     });
     observer.observe(container);
-
     fit();
 
     return () => {
       observer.disconnect();
       window.removeEventListener('keydown', handleKey);
       instance.dispose();
-      // Use a reference to setCanvas if needed, but actually setCanvas is stable
       setCanvas(null);
     };
-    // Only setCanvas is a stable dependency. Others would cause loops.
   }, [setCanvas, setSelectedObject]); 
 
   return (
-    <div
-      ref={containerRef}
-      className="flex-1 bg-[#121414] overflow-hidden relative"
-      onContextMenu={(e) => e.preventDefault()}
-    >
+    <div ref={containerRef} className="flex-1 bg-[#121414] overflow-hidden relative" onContextMenu={(e) => e.preventDefault()}>
       <canvas ref={canvasRef} />
-
-      {/* Hints */}
       <div className="absolute top-8 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full glass-panel flex items-center gap-3 border-outline/10 pointer-events-none opacity-40">
         <div className="flex items-center gap-2">
           <kbd className="px-2 py-0.5 rounded bg-surface-high text-[10px] border border-outline/20">CTRL</kbd>
@@ -203,8 +260,6 @@ export default function Canvas() {
           <span className="text-[9px] font-black uppercase">OR ALT + DRAG TO PAN</span>
         </div>
       </div>
-
-      {/* Zoom UI */}
       <div className="absolute bottom-12 right-12 flex flex-col gap-2 scale-90 origin-bottom-right">
         <div className="glass-panel p-2 rounded-2xl flex flex-col gap-1 border-outline/10 shadow-2xl">
           <button onClick={zoomIn} className="w-10 h-10 rounded-xl hover:bg-surface-high flex items-center justify-center font-bold text-foreground/60">+</button>
