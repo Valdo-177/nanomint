@@ -85,8 +85,28 @@ export default function PropertiesSidebar() {
   }
 
   const handleUpdate = (prop: string, val: any) => {
+     if (!selectedObject) return;
+     
+     // Update local UI state immediately
+     if (prop === 'fontSize') setFontSize(val);
+     if (prop === 'fontFamily') setFontFamily(val);
+     if (prop === 'charSpacing') setCharSpacing(val);
+     if (prop === 'lineHeight') setLineHeight(val);
+     if (prop === 'fill') setFill(val);
+     if (prop === 'textAlign') setTextAlign(val);
+     if (prop === 'fontWeight') setFontWeight(val);
+     if (prop === 'fontStyle') setFontStyle(val);
+
      updateProperty(prop, val);
-     // Manual render call for immediate font loading update
+     
+     // Font loading safety
+     if (prop === 'fontFamily' && canvas) {
+        // @ts-ignore
+        document.fonts.load(`1em "${val}"`).then(() => {
+            canvas.renderAll();
+        });
+     }
+     
      canvas?.requestRenderAll();
   };
 
